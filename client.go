@@ -64,32 +64,50 @@ func (c *NvimClient) SetQuickfixList(items []QuickfixItem) error {
 
 	// Use setqflist() function
 	command := fmt.Sprintf("call setqflist(%s)", vimList)
-	return c.ExecuteCommand(command)
+	_, err := c.ExecuteCommand(command)
+	return err
 }
 
 func (c *NvimClient) OpenQuickfixWindow() error {
-	return c.ExecuteCommand("copen")
+	_, err := c.ExecuteCommand("copen")
+	return err
 }
 
-func (c *NvimClient) ExecuteCommand(command string) error {
-	// Ensure we're in normal mode before executing the command
-	// Send multiple escapes to handle different scenarios:
-	// - <C-\><C-n> forces normal mode from any mode (including terminal)
-	// - <Esc><Esc> handles insert mode and visual mode
-	// - The final : enters command mode
-	escapeSequence := `<C-\><C-n><Esc><Esc>:`
-	remoteCmd := fmt.Sprintf("%s%s<CR>", escapeSequence, command)
-
-	cmd := exec.Command("nvim", "--server", c.socketPath, "--remote-send", remoteCmd)
-
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
-
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("failed to execute command: %v, stderr: %s", err, stderr.String())
+func (c *NvimClient) ExecuteCommand(command string) (string, error) {
+	// Input validation
+	if strings.TrimSpace(command) == "" {
+		return "", fmt.Errorf("command cannot be empty")
 	}
 
-	return nil
+	// Normalize command (remove leading colon if present)
+	normalizedCommand := command
+	if strings.HasPrefix(command, ":") {
+		normalizedCommand = command[1:]
+	}
+
+	// Clear Vim's error message variable first
+	if _, err := c.remoteExpr("execute('let v:errmsg = \"\"')"); err != nil {
+		return "", fmt.Errorf("failed to clear error message: %v", err)
+	}
+
+	// Execute command and capture output using execute() function
+	output, err := c.remoteExpr(fmt.Sprintf("execute('%s')", c.escapeVimString(normalizedCommand)))
+	if err != nil {
+		return "", fmt.Errorf("failed to execute command: %v", err)
+	}
+
+	// Check for Vim errors by reading v:errmsg
+	vimError, err := c.remoteExpr("v:errmsg")
+	if err == nil && strings.TrimSpace(vimError) != "" {
+		return "", fmt.Errorf("vim error: %s", vimError)
+	}
+
+	// Return the command output, or a success message if no output
+	if strings.TrimSpace(output) == "" {
+		return fmt.Sprintf("Command executed successfully: %s", command), nil
+	}
+
+	return output, nil
 }
 
 func (c *NvimClient) quickfixItemsToVimList(items []QuickfixItem) string {
@@ -134,4 +152,108 @@ type QuickfixItem struct {
 	Column   int
 	Text     string
 	Type     string // "E" for error, "W" for warning, "I" for info
+}
+
+func (c *NvimClient) GetBufferContext() (string, error) {
+	var result strings.Builder
+
+	// Get file path
+	filePath, err := c.remoteExpr("expand('%:p')")
+	if err != nil {
+		return "", fmt.Errorf("failed to get file path: %v", err)
+	}
+	result.WriteString("FILE_PATH:" + filePath + "\n")
+
+	// Get cursor position
+	cursor, err := c.remoteExpr("printf('%d:%d', line('.'), col('.'))")
+	if err != nil {
+		return "", fmt.Errorf("failed to get cursor position: %v", err)
+	}
+	result.WriteString("CURSOR:" + cursor + "\n")
+
+	// Get current mode
+	mode, err := c.remoteExpr("mode()")
+	if err != nil {
+		return "", fmt.Errorf("failed to get mode: %v", err)
+	}
+	result.WriteString("MODE:" + mode + "\n")
+
+	// Check if in visual mode and get selection
+	if strings.HasPrefix(mode, "v") || strings.HasPrefix(mode, "V") || mode == "\x16" { // \x16 is Ctrl-V
+		// Get visual selection range using current selection positions
+		visualRange, err := c.remoteExpr("printf('%d:%d to %d:%d', getpos('v')[1], getpos('v')[2], getpos('.')[1], getpos('.')[2])")
+		if err != nil {
+			return "", fmt.Errorf("failed to get visual range: %v", err)
+		}
+		result.WriteString("VISUAL_SELECTION:" + visualRange + "\n")
+
+		// Get selected text using Lua for more reliable extraction
+		selectedText, err := c.remoteExpr(`luaeval('(function()
+			local start_pos = vim.fn.getpos("v")
+			local end_pos = vim.fn.getpos(".")
+			local start_line, start_col = start_pos[2], start_pos[3]
+			local end_line, end_col = end_pos[2], end_pos[3]
+
+			-- Ensure proper ordering
+			if start_line > end_line or (start_line == end_line and start_col > end_col) then
+				start_line, end_line = end_line, start_line
+				start_col, end_col = end_col, start_col
+			end
+
+			local lines = vim.api.nvim_buf_get_lines(0, start_line - 1, end_line, false)
+			return table.concat(lines, "\\n")
+		end)()')`)
+		if err != nil {
+			return "", fmt.Errorf("failed to get selected text: %v", err)
+		}
+		result.WriteString("SELECTED_TEXT:" + selectedText + "\n")
+	} else {
+		// Get current line
+		currentLine, err := c.remoteExpr("getline('.')")
+		if err != nil {
+			return "", fmt.Errorf("failed to get current line: %v", err)
+		}
+		result.WriteString("CURRENT_LINE:" + currentLine + "\n")
+	}
+
+	return result.String(), nil
+}
+
+func (c *NvimClient) GetDiagnostics() (string, error) {
+	// Use Lua expression to get diagnostics as formatted string
+	expr := `luaeval('(function()
+		local diagnostics = vim.diagnostic.get(0)
+		if #diagnostics == 0 then
+			return "NO_DIAGNOSTICS"
+		else
+			local result = {}
+			for _, diag in ipairs(diagnostics) do
+				local severity_map = {"ERROR", "WARN", "INFO", "HINT"}
+				local severity = severity_map[diag.severity] or "UNKNOWN"
+				table.insert(result, "DIAGNOSTIC:" .. (diag.lnum + 1) .. ":" .. (diag.col + 1) .. ":" .. severity .. ":" .. (diag.message or ""))
+			end
+			return table.concat(result, "\\n")
+		end
+	end)()')`
+
+	output, err := c.remoteExpr(expr)
+	if err != nil {
+		return "", fmt.Errorf("failed to get diagnostics: %v", err)
+	}
+
+	return output, nil
+}
+
+func (c *NvimClient) remoteExpr(expr string) (string, error) {
+	cmd := exec.Command("nvim", "--server", c.socketPath, "--remote-expr", expr)
+
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	if err := cmd.Run(); err != nil {
+		return "", fmt.Errorf("failed to execute expression: %v, stderr: %s", err, stderr.String())
+	}
+
+	return strings.TrimSpace(stdout.String()), nil
 }

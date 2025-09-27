@@ -1,13 +1,15 @@
 # Neovim MCP Server
 
-A Model Context Protocol (MCP) server that enables Claude to interact with your Neovim editor.
+A Model Context Protocol (MCP) server that connects AI agents to your live Neovim editing session. Agents can see your current context (what you're working on, current errors) and send analysis results back to your editor's quickfix list.
 
 ## Features
 
-This MCP server provides two main tools:
+This MCP server provides 4 focused tools that enable smooth context sharing between you and AI agents:
 
-1. **populate_quickfix** - Populate Neovim's quickfix list with code analysis results, errors, or warnings
-2. **execute_command** - Execute any Vim command in the connected Neovim instance
+1. **get_buffer_context** - Lets agents see what file you're in, your cursor position, and any selected text
+2. **get_diagnostics** - Provides agents with current LSP errors, warnings, and hints from your code
+3. **populate_quickfix** - Allows agents to send analysis results back to your editor as a navigable quickfix list
+4. **execute_command** - Enables agents to run specific Vim commands when needed (returns command output)
 
 ## Installation
 
@@ -40,50 +42,13 @@ claude mcp add neovim /path/to/neovim-mcp/build/neovim-mcp --scope user
 
 ## Usage Examples
 
-### Tracing a Feature Implementation
+**You**: "What does this function do?"
 
-**Scenario**: You're working on a user authentication system and want to understand how login validation works.
+The agent will use `get_buffer_context` to see exactly what code you're looking at (your cursor position or selected text), then explain the functionality based on your current context in Neovim.
 
 **You**: "I need to trace how the `validateLogin` function works. Can you help me navigate through the code and show me all the related functions?"
 
-**Claude will**:
-1. Search for `validateLogin` function definition
-2. Use `execute_command` to jump to the function: `:goto 156`
-3. Find related functions like `hashPassword`, `checkUserExists`
-4. Use `populate_quickfix` to create a navigation list of all related functions:
-   ```json
-   {
-     "items": [
-       {
-         "filename": "/src/auth/login.go",
-         "line": 156,
-         "text": "validateLogin function definition",
-         "type": "I"
-       },
-       {
-         "filename": "/src/auth/crypto.go",
-         "line": 23,
-         "text": "hashPassword helper function",
-         "type": "I"
-       },
-       {
-         "filename": "/src/db/users.go",
-         "line": 78,
-         "text": "checkUserExists database call",
-         "type": "I"
-       }
-     ]
-   }
-   ```
-
-### Code Review and Issue Detection
-
-**You**: "Can you review this pull request and highlight any potential issues in the quickfix list?"
-
-**Claude will**:
-1. Analyze the changed files for common issues
-2. Populate the quickfix list with findings like unused variables, potential null pointer dereferences, or style violations
-3. Use `execute_command` to navigate between issues: `cnext`, `cprev`
+The agent will search for related functions like `hashPassword`, `checkUserExists`, then use `populate_quickfix` to create a navigation list of all related functions, allowing you to jump between them with `:cnext` and `:cprev`.
 
 
 ## Socket Detection

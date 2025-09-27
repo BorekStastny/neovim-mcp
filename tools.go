@@ -33,20 +33,36 @@ func (t *NvimToolbox) RegisterTools(s *server.MCPServer) {
 	// Create populate_quickfix tool
 	populateQuickfixTool := mcp.NewTool(
 		"populate_quickfix",
-		mcp.WithDescription("Populate Neovim's quickfix list with code analysis results or errors"),
+		mcp.WithDescription("Send analysis results, errors, or findings back to the user's editor as a navigable list. Use this to show the user locations that need attention."),
 		mcp.WithInputSchema[PopulateQuickfixArgs](),
 	)
 
 	// Create execute_command tool
 	executeCommandTool := mcp.NewTool(
 		"execute_command",
-		mcp.WithDescription("Execute a Vim command in the connected Neovim instance"),
+		mcp.WithDescription("Execute Vim commands when you need specific editor information not available through other tools. Prefer the dedicated context tools first."),
 		mcp.WithInputSchema[ExecuteCommandArgs](),
+	)
+
+	// Create get_buffer_context tool
+	getBufferContextTool := mcp.NewTool(
+		"get_buffer_context",
+		mcp.WithDescription("Get what the user is currently looking at - file path, cursor position, selected text, and current line. Use this first to understand what code the user wants help with."),
+		mcp.WithInputSchema[GetBufferContextArgs](),
+	)
+
+	// Create get_diagnostics tool
+	getDiagnosticsTool := mcp.NewTool(
+		"get_diagnostics",
+		mcp.WithDescription("Get current errors, warnings, and hints from language servers. Use this to understand what's broken or needs attention in the code."),
+		mcp.WithInputSchema[GetDiagnosticsArgs](),
 	)
 
 	// Register tools with their handlers
 	s.AddTool(populateQuickfixTool, t.PopulateQuickfix)
 	s.AddTool(executeCommandTool, t.ExecuteCommand)
+	s.AddTool(getBufferContextTool, t.GetBufferContext)
+	s.AddTool(getDiagnosticsTool, t.GetDiagnostics)
 }
 
 // PopulateQuickfix populates Neovim's quickfix list with code analysis results or errors
@@ -97,11 +113,50 @@ func (t *NvimToolbox) ExecuteCommand(ctx context.Context, request mcp.CallToolRe
 		return mcp.NewToolResultError(fmt.Sprintf("failed to bind arguments: %v", err)), nil
 	}
 
-	if err := t.client.ExecuteCommand(args.Command); err != nil {
+	output, err := t.client.ExecuteCommand(args.Command)
+	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("failed to execute command: %v", err)), nil
 	}
 
-	return mcp.NewToolResultText(fmt.Sprintf("Successfully executed command: %s", args.Command)), nil
+	return mcp.NewToolResultText(output), nil
+}
+
+// GetBufferContext retrieves current buffer context including cursor position and visual selection
+func (t *NvimToolbox) GetBufferContext(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	if err := t.ensureConnection(); err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
+	}
+
+	var args GetBufferContextArgs
+	if err := request.BindArguments(&args); err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("failed to bind arguments: %v", err)), nil
+	}
+
+	context, err := t.client.GetBufferContext()
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("failed to get buffer context: %v", err)), nil
+	}
+
+	return mcp.NewToolResultText(context), nil
+}
+
+// GetDiagnostics retrieves LSP diagnostics for the current buffer
+func (t *NvimToolbox) GetDiagnostics(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	if err := t.ensureConnection(); err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
+	}
+
+	var args GetDiagnosticsArgs
+	if err := request.BindArguments(&args); err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("failed to bind arguments: %v", err)), nil
+	}
+
+	diagnostics, err := t.client.GetDiagnostics()
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("failed to get diagnostics: %v", err)), nil
+	}
+
+	return mcp.NewToolResultText(diagnostics), nil
 }
 
 // ensureConnection tries to reconnect to Neovim if not already connected
@@ -131,4 +186,12 @@ type PopulateQuickfixArgs struct {
 
 type ExecuteCommandArgs struct {
 	Command string `json:"command" jsonschema:"description=Vim command to execute (e.g. 'set number' 'vsplit' 'wq' etc.)"`
+}
+
+type GetBufferContextArgs struct {
+	// No arguments needed - will return current line or visual selection
+}
+
+type GetDiagnosticsArgs struct {
+	// No arguments needed for now
 }

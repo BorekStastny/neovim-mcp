@@ -18,6 +18,7 @@ func main() {
 		"neovim-mcp",
 		"1.0.0",
 		server.WithToolCapabilities(true),
+		server.WithInstructions("This MCP server provides access to the user's live Neovim editing session. Use get_buffer_context first to see what code the user is currently working on, get_diagnostics to understand any issues, and populate_quickfix to send your analysis results back to their editor."),
 	)
 
 	// Register tools
